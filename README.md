@@ -1,9 +1,9 @@
 # trace2sing
-Trace program execution and create Singularity container for reproducible execution
+Trace program execution and create [Singularity](http://singularity.lbl.gov) container for reproducible execution
 
 ## How it works
 trace2sing execute a command in order to trace it with strace, it will copy files needed by
-command to create a Singularity container for further execution on another system with same
+command to create a [Singularity](http://singularity.lbl.gov) container for further execution on another system with same
 architecture.
 
 ## Demo
@@ -67,6 +67,9 @@ lrwxrwxrwx ced/ced           0 2017-03-21 21:06 ./lib64/ld-linux-x86-64.so.2 -> 
 ```
 
  * To display exported environment variables during execution
+
+Be careful when your share singrun.sh, some environment variable could contain some secrets
+
 ```bash
 user@local:~$ ./singrun.sh -d
 export USER="ced"
@@ -83,10 +86,6 @@ user@local:~$ export SENV_OMP_NUM_THREADS=8
 user@local:~$ ./singrun.sh
 ```
 Will set OMP_NUM_THREADS to 8 during container execution
-
-<aside class="warning">
-Be careful when your share singrun.sh, some environment variable could contain some secrets
-</aside>
 
  * To launch a limited shell in container 
 ```bash
