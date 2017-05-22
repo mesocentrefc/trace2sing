@@ -27,6 +27,8 @@ The system which execute singrun.sh must have Singularity installed.
  * Same as Singularity
  * Generated containers need Singularity >= 2.2 with a linux kernel >= 3.5
  * Generated containers are compatible with systems based on same CPU architecture
+ * Don't use input files or binaries located in /tmp directory, they will be overriden by /tmp system partition
+   where they are executed
 
 ## How to use it
 
@@ -44,13 +46,13 @@ The above command generate an executable named singrun.sh, this file
 embed the container root filesystem to use with Singularity.
 
 ### singrun.sh
- * To extract container file tree into singrun_rootfs directory:
+ * **To extract container file tree into singrun_rootfs directory:**
 ```bash
 user@local:~$ ./singrun.sh -x
 Extracting file tree into singrun_rootfs directory
 ```
 
- * To list container files:
+ * **To list container files:**
 ```bash
 user@local:~$ ./singrun.sh -l
 List file tree
@@ -66,9 +68,14 @@ drwxr-xr-x ced/ced           0 2017-05-21 21:49 ./lib64/
 lrwxrwxrwx ced/ced           0 2017-03-21 21:06 ./lib64/ld-linux-x86-64.so.2 -> /lib/x86_64-linux-gnu/ld-2.23.so
 ```
 
- * To display exported environment variables during execution
+ * **To display exported environment variables during execution:**
+
+---
+**NOTE**
 
 Be careful when your share singrun.sh, some environment variable could contain some secrets
+
+---
 
 ```bash
 user@local:~$ ./singrun.sh -d
@@ -87,7 +94,7 @@ user@local:~$ ./singrun.sh
 ```
 Will set OMP_NUM_THREADS to 8 during container execution
 
- * To launch a limited shell in container 
+ * **To launch a limited shell in container :**
 ```bash
 user@local:~$ ./singrun.sh -s
 Run shell into container
@@ -96,9 +103,16 @@ Singularity: Invoking an interactive shell within container...
 $ 
 ```
 
- * To execute command into container
+ * **To execute command into container:**
 ```bash
 user@local:~$ ./singrun.sh -e python -c "print 'Goodbye !'"
 Execute command into container
 Goodbye !
 ```
+---
+**NOTE**
+
+Your home directory is bound to /realhome in container, so if you want to use a file located in your home directory,
+you must replace $HOME by /realhome in the path
+
+---
