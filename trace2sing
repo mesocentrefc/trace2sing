@@ -25,6 +25,7 @@ output="singrun.sh"
 
 pfatal () {
     echo $1 >&2
+    rm -rf $dump
     exit 1
 }
 
@@ -33,12 +34,27 @@ if [ $# -lt 1 ]; then
 fi
 
 relmkdir () {
-    if [ "$1" != "${1#/}" ]; then
-        d="$dump$1"
+    rdir=$(readlink -f $1)
+    dir=$1
+    if [ "$rdir" != "$dir" ]; then
+        echo "$dir" | awk "$awk_script" | while read path; do
+            if [ ! -e $dump/$path ]; then
+                if [ -L $path ]; then
+                    relmkdir $(readlink -f $path)
+                    cp -a $path $dump$path 2> /dev/null
+                else
+                    mkdir $dump$path 2> /dev/null
+                fi
+            fi
+        done
     else
-        d="$dump/$1"
+        if [ "$dir" != "${dir#/}" ]; then
+            d="$dump$dir"
+        else
+            d="$dump/$dir"
+        fi
+        mkdir -p $d 2> /dev/null
     fi
-    mkdir -p $d
 }
 
 copy () {
@@ -49,128 +65,286 @@ copy () {
         filename="$dump/$1"
     fi
     cp -a $1 $filename 2> /dev/null
+
+    # take shebang script into account
+    # as it's executed by kernel ... no trace
+    line=$(sed -n '1{s/^#![[:blank:]]*//p;q}' $1 2> /dev/null)
+    if [ ! -z "$line" ]; then
+        duplicate ${line% *}
+    fi
+}
+
+duplink () {
+    copy $(readlink -f $1)
+    copy $1
+    target=$(readlink $1)
+    if [ "$target" != "${target#/}" ]; then
+        linkval=$target
+    else
+        linkval="$(dirname $1)/$target"
+    fi
+    copy $linkval
+    if [ -L $linkval ]; then
+        duplicate $linkval
+    fi
 }
 
 duplicate () {
-    if [ -d $1 ]; then
-        relmkdir $1
-    else
-        relmkdir $(dirname $1)
-    fi
-    if [ -f $1 ]; then
-        copy $(readlink -f $1)
-    fi
-    if [ -L $1 ]; then
-        copy $1
-        target=$(readlink $1)
-        if [ "$target" != "${target#/}" ]; then
-            linkval=$target
-        else
-            linkval="$(dirname $1)/$target"
-        fi
-        copy $linkval
-        if [ -L $linkval ]; then
-            duplicate $linkval
+    if [ -e $1 ]; then
+        if [ -d $1 ]; then
+            relmkdir $1
+        elif [ -f $1 ]; then
+            if [ -L $1 ]; then
+                duplink $1
+            else
+                file=$(readlink -f $1)
+                if [ "$1" != "$file" ]; then
+                    copy $file
+                fi
+                copy $1
+            fi
         fi
     fi
 }
 
-if [ -z $(which strace) ]; then
-    pfatal "Install strace package"
+if [ -z $(which perl) ]; then
+    pfatal "[ERROR]: perl is missing, you must install it first"
 fi
 
-awk_script=$(cat <<'AWK'
-{
-    match($0,/(^[0-9A-Za-z_]*)=(.*)/,a)
-    if (a[1] != "") {
-        print "export " a[1] "=\"" a[2] "\""
-    }
-}
-AWK
-)
+if [ -z $(which strace) ]; then
+    pfatal "[ERROR]: strace is missing, you must install it first"
+fi
 
-awk_match=$(env|grep -w PATH|awk "$awk_script")
-if [ -z "$awk_match" ]; then
-    pfatal "Install gawk package"
+# -y option greatly simplify processing of file descriptors
+strace -y -o /dev/null /bin/true 2> /dev/null
+if [ $? != 0 ]; then
+    version=$(strace -V)
+    pfatal "[ERROR]: strace version >= 4.7 is required, current: $version"
 fi
 
 rm -rf $dump
 mkdir -p $dump
 
-env -u DISPLAY \
-    -u SHELL | awk "$awk_script" > $dump/environment
-
-echo "export SHELL=\"/bin/sh\"" >> $dump/environment
-
-executable=$(which $1)
-if [ ! -z "$executable" ]; then
-    if [ "$executable" != "${executable#/}" ]; then
-        duplicate $executable
-    fi
-fi
-
 fifo=$(mktemp -u)
-mkfifo $fifo
-chmod 0600 $fifo
+mkfifo -m 0600 $fifo
 
-# Parse and remove duplicate files
 awk_script=$(cat <<'AWK'
 {
-    match($0,/\y(open|execve|access|chdir|stat)\y\("([^"]*)"(.*)[ ]+= [^-]/,a)
-    filename = a[2]
-    if (!(filename ~ /^(\/dev|\/proc|\/run|\/sys)|\/boot/)) {
-        if (a[2] != "") {
-            if (!x[a[2]]) {
-                x[a[2]]++
-                print a[1] "#" a[2]
-            }
+    n = split($0, test, "/");
+    for(i=2; i<=n; i++) {
+        for (j=2; j<=i; j++) {
+            printf "/%s",test[j];
         }
+        printf "\n";
     }
 }
 AWK
 )
 
-awk "$awk_script" $fifo | while read line; do
-    syscall=${line%#*}
+perl_script=$dump/t2s.pl
+
+# Parse and remove duplicate files
+cat > $perl_script << 'PERL'
+use strict;
+use warnings;
+
+my $fifo = $ARGV[0];
+my $current = $ARGV[1];
+my $dumpdir = $ARGV[2];
+
+my $fifo_fh;
+open($fifo_fh, "<", $fifo) or die "fifo \"$fifo\" doesn't exist.";
+
+open(my $envfile, '>', "$dumpdir/environment");
+foreach (sort keys %ENV) {
+    if (!($_ =~ /^(DISPLAY|SHELL|SSH)/)) {
+        print $envfile "export $_=\"$ENV{$_}\"\n";
+    }
+}
+print $envfile "export SHELL=\"/bin/sh\"\n";
+close $envfile;
+
+my %pids;
+my %files;
+
+while (<$fifo_fh>) {
+    if ($_ =~ /([0-9]+)(.*)?\b(open|openat|execve|chdir|fchdir|oldstat|stat|stat64)\b\((.*)/) {
+        my $pid = $1;
+        my $syscall = $3;
+        if (!$pids{$pid}) {
+            $pids{$pid} = $current;
+        }
+        if ($4 =~ /(.*)\)\s*=\s*([^-][0-9]+)/) {
+            my $content = $1;
+            my $filename = "";
+            if ($syscall eq "execve") {
+                if ($1 =~ /"PWD=([^"]*)"/) {
+                    $pids{$pid} = $1;
+                } elsif ($1 =~ /"OLDPWD=([^"]*)"/) {
+                    $pids{$pid} = $1;
+                }
+                if ($content =~ /^"([^"]*)"/) {
+                    $filename = $1
+                }
+                $current = $pids{$pid};
+            } elsif ($syscall eq "chdir") {
+                if ($content =~ /^"(.*)"/) {
+                    my $first = substr $1, 0, 1;
+                    if ($first eq "/") {
+                        $pids{$pid} = $1;
+                    } else {
+                        $pids{$pid} = $pids{$pid} . "/" . $1;
+                    }
+                    $current = $pids{$pid};
+                }
+            } elsif ($syscall eq "fchdir") {
+                if ($content =~ /^[0-9]+<(.*)>/) {
+                    my $first = substr $1, 0, 1;
+                    if ($first eq "/") {
+                        $pids{$pid} = $1;
+                    } else {
+                        $pids{$pid} = $pids{$pid} . "/" . $1;
+                    }
+                    $current = $pids{$pid};
+                }
+            } else {
+                if ($syscall eq "openat") {
+                    if ($content =~ /^[0-9]+<(.*)>/) {
+                        $filename = $1;
+                    }
+                } elsif ($content =~ /^"([^"]*)"/) {
+                    $filename = $1;
+                }
+            }
+            if ($filename ne "") {
+                if (!($filename =~ /^(\/dev|\/proc|\/run|\/sys)/)) {
+                    if (!$files{$filename}) {
+                        $files{$filename} = 1;
+                        print $pids{$pid} . "#" . $filename . "\n";
+                    }
+                }
+            }
+        } else {
+            my $content = $4;
+            my $filename = "";
+            if ($syscall eq "execve") {
+                if ($content =~ /"PWD=([^"]*)"/) {
+                    $pids{$pid} = $1;
+                } elsif ($content =~ /"OLDPWD=([^"]*)"/) {
+                    $pids{$pid} = $1;
+                }
+                if ($content =~ /^"([^"]*)"/) {
+                    $filename = $1;
+                }
+                $current = $pids{$pid};
+            } elsif ($syscall eq "open") {
+                if ($content =~ /resumed(.*)=\s*([^-][0-9]+)(<(.*)>)?/) {
+                    $filename = $4;
+                }
+            } elsif ($syscall eq "chdir") {
+                if ($content =~ /^"([^"]*)"/) {
+                    my $first = substr $1, 0, 1;
+                    if ($first eq "/") {
+                        $pids{$pid} = $1;
+                    } else {
+                        $pids{$pid} = $pids{$pid} . "/" . $1;
+                    }
+                    $current = $pids{$pid};
+                }
+            } elsif ($syscall =~ /^(oldstat|stat|stat64)$/) {
+                if ($content =~ /^"([^"]*)"/) {
+                    $filename = $1;
+                }
+            }
+            if ($filename ne "") {
+                if (!($filename =~ /^(\/dev|\/proc|\/run|\/sys)/)) {
+                    if (!$files{$filename}) {
+                        $files{$filename} = 1;
+                        print $pids{$pid} . "#" . $filename . "\n";
+                    }
+                }
+            }
+        }
+
+    }
+}
+close $fifo_fh;
+exit(0);
+PERL
+
+perl $perl_script $fifo $saved $dump | while read line; do
+    current=${line%#*}
     filepath=${line#*#}
 
-    if [ $syscall = "chdir" ]; then
-        cd $arg
-        current=$(pwd)
-    else
+    if [ "$filepath" != "${filepath#/}" ]; then
         duplicate $filepath
+    else
+        duplicate $current"/"$filepath
     fi
 done &
 
 pid=$!
-cmdline="$@"
-strace -q -v -f \
-       -e trace=open,execve,access,chdir,stat \
+
+strace -qq -v -f -y \
+       -e trace=open,execve,chdir,fchdir,openat,oldstat,stat,stat64 \
+       -s 256 \
        -e abbrev=none \
        -o $fifo \
-       /bin/sh -c "$cmdline"
+       "$@"
+
+cmdline=""
+for arg in "$@"; do
+    if [ "$arg" != "${arg% *}" ]; then
+        if [ "$arg" != "${arg%\'}" ]; then
+            carg="\"$arg\""
+        else
+            carg="'$arg'"
+        fi
+    else
+        carg="$arg"
+    fi
+    if [ "$carg" != "" ]; then
+        cmdline="$cmdline $carg"
+    else
+        cmdline="$cmdline$carg"
+    fi
+done;
+
+status=$?
+
+if [ $status = 0 ]; then
+    echo "Generating self-extracting $output archive ... please wait"
+fi
 
 wait $pid
 
 cd $saved
 rm -f $fifo
+rm -f $perl_script
 
-echo "Generating self-extracting $output archive ... please wait"
-
-loader=$(strings /bin/sh|head -n 1)
-duplicate $loader
+if [ $status != 0 ]; then
+    pfatal "[ERROR]: Failed to execute $cmdline"
+fi
 
 cd $dump
 install -d -m 0755 "dev"
 install -d -m 0755 "bin"
+install -d -m 0755 "boot"
 install -d -m 0755 "home"
 install -d -m 0755 "etc"
 install -d -m 0750 "root"
 install -d -m 0755 "proc"
 install -d -m 0755 "sys"
+install -d -m 0755 "run"
 install -d -m 1777 "tmp"
 install -d -m 1777 "var/tmp"
 install -d -m 0755 "realhome"
+
+loader=$(strings /bin/sh|head -n 1)
+duplicate $loader
+duplicate $HOME
+duplicate $saved
+duplicate /bin/sh
 
 cat > .run << EOF
 #!/bin/sh
@@ -191,7 +365,6 @@ cat > .shell << EOF
 #!/bin/sh
 . /environment
 exec \$SHELL "\$@"
-exit 1
 EOF
 chmod 0755 .shell
 
@@ -217,15 +390,15 @@ launch () {
     root="$directory/singrun_rootfs"
     mkdir $root
     extract_archive | tar -xzf - -C $root
-    if [ "$1" = "exec" ]; then
-        shift 2 
-        args="$@"
-    else
-        args=""
-    fi
     env|sed -n 's/^SENV_\(.*\)=\(.*\)$/export \1="\2"/p' >> $root/environment
-    cd $directory
-    singularity $cmd -w -H $HOME:/realhome $root $args
+    if [ "$cmd" = "exec" ]; then
+        shift 2
+        args="$@"
+        singularity $cmd -w $root $args
+    else
+        cd $directory
+        singularity $cmd -w -H $HOME:/realhome $root
+    fi
     code=$?
     cd $saved
     rm -rf $directory

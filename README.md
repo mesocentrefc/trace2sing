@@ -1,31 +1,29 @@
 # trace2sing
-Trace program execution and create [Singularity](http://singularity.lbl.gov) container for reproducible execution
+It traces programs execution and create [Singularity](http://singularity.lbl.gov) containers for reproducible execution.
 
 ## How it works
-trace2sing execute a command in order to trace it with strace, it will copy files needed by
-command to create a [Singularity](http://singularity.lbl.gov) container for further execution on another system with same
-architecture.
+It can trace any program to generate a **minimal** Singularity container embedded in a resulting binary named singrun.sh. 
+trace2sing doesn't require root privileges nor Singularity installation for container generation. On the other hand, the 
+system executing singrun.sh will require Singularity installation.
 
 ## Demo
 [![asciicast](https://asciinema.org/a/90fve3i9t0ossj06a8tptajzw.png)](https://asciinema.org/a/90fve3i9t0ossj06a8tptajzw)
 
 ## Requirements
-trace2sing is design to be portable and require the following packages:
- * strace
- * GNU awk (installed by default on many distributions) 
+trace2sing need the following packages:
+ * strace (version >= 4.7)
+ * perl (installed by default on many distributions) 
  * coreutils (installed by default on many distributions)
  * binutils (installed by default on many distributions)
 
-It was tested on:
- * CentOS 6, 7 (yum install strace)
+It was tested with following distributions (should work on all architecture supported by strace):
+ * CentOS 6.7, CentOS 7 (yum install strace)
  * Ubuntu 14.04, 16.04, 17.04 (apt-get install strace)
- * Alpine Linux 3.2 and edge (apk add strace gawk)
-
-The system which execute singrun.sh must have Singularity installed.
+ * Alpine Linux 3.2 and edge (apk add strace perl)
 
 ## Limitations
  * Same as Singularity
- * Generated containers need Singularity >= 2.2 with a linux kernel >= 3.5
+ * Generated containers need Singularity >= 2.2 with a linux kernel >= 3.5 for execution
  * Generated containers are compatible with systems based on same CPU architecture
  * Don't use input files or binaries located in /tmp directory, they will be overriden by /tmp system partition
    where they are executed
@@ -34,25 +32,25 @@ The system which execute singrun.sh must have Singularity installed.
 
 ### trace2sing
 
-To trace command and package into an executable Singularity container:
+To trace a program and package it into an executable Singularity's container:
 
 ```bash
-user@local:~$ trace2sing python -c "print 'Hello !'"
+user@local:~$ trace2sing python -c 'print "Hello !"'
 Hello !
 Generating self-extracting singrun.sh archive ... please wait
 ```
-
-The above command generate an executable named singrun.sh, this file
-embed the container root filesystem to use with Singularity.
+The above command will generate a singrun.sh executable.
 
 ### singrun.sh
  * **To extract container file tree into singrun_rootfs directory:**
+
 ```bash
 user@local:~$ ./singrun.sh -x
 Extracting file tree into singrun_rootfs directory
 ```
 
  * **To list container files:**
+
 ```bash
 user@local:~$ ./singrun.sh -l
 List file tree
@@ -70,13 +68,6 @@ lrwxrwxrwx ced/ced           0 2017-03-21 21:06 ./lib64/ld-linux-x86-64.so.2 -> 
 
  * **To display exported environment variables during execution:**
 
----
-**NOTE**
-
-Be careful when your share singrun.sh, some environment variable could contain some secrets
-
----
-
 ```bash
 user@local:~$ ./singrun.sh -d
 export USER="ced"
@@ -87,14 +78,15 @@ export JOB="dbus"
 export SHELL="/bin/sh"
 ```
 
-Its possible to override an exported environment variable by exporting variable with SENV_ prefix, example to override OMP_NUM_THREADS
+It's possible to override an exported environment variable by prefixing the variable with SENV_, example to override OMP_NUM_THREADS
 ```bash
 user@local:~$ export SENV_OMP_NUM_THREADS=8
 user@local:~$ ./singrun.sh
 ```
 Will set OMP_NUM_THREADS to 8 during container execution
 
- * **To launch a limited shell in container :**
+ * **To start a limited shell in container :**
+
 ```bash
 user@local:~$ ./singrun.sh -s
 Run shell into container
@@ -104,15 +96,18 @@ $
 ```
 
  * **To execute command into container:**
+
 ```bash
-user@local:~$ ./singrun.sh -e python -c "print 'Goodbye !'"
+user@local:~$ ./singrun.sh -e python -c 'print "Goodbye !"'
 Execute command into container
 Goodbye !
-```
+
 ---
 **NOTE**
 
-Your home directory is bound to /realhome in container, so if you want to use a file located in your home directory,
+* Your home directory is bound to /realhome in container, so if you want to use a file located in your home directory,
 you must replace $HOME by /realhome in the path
+
+* Be careful when your share singrun.sh, some environment variables and/or files could contain some secrets
 
 ---
