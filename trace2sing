@@ -285,13 +285,6 @@ done &
 
 pid=$!
 
-strace -qq -v -f -y \
-       -e trace=open,execve,chdir,fchdir,openat,oldstat,stat,stat64 \
-       -s 256 \
-       -e abbrev=none \
-       -o $fifo \
-       "$@"
-
 cmdline=""
 for arg in "$@"; do
     if [ "$arg" != "${arg% *}" ]; then
@@ -309,6 +302,13 @@ for arg in "$@"; do
         cmdline="$cmdline$carg"
     fi
 done;
+
+strace -qq -v -f -y \
+       -e trace=open,execve,chdir,fchdir,openat,oldstat,stat,stat64 \
+       -s 256 \
+       -e abbrev=none \
+       -o $fifo \
+       /bin/sh -c "$cmdline"
 
 status=$?
 
@@ -344,7 +344,6 @@ loader=$(strings /bin/sh|head -n 1)
 duplicate $loader
 duplicate $HOME
 duplicate $saved
-duplicate /bin/sh
 
 cat > .run << EOF
 #!/bin/sh
