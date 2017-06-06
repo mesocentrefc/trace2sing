@@ -101,6 +101,7 @@ $
 user@local:~$ ./singrun.sh -e python -c 'print "Goodbye !"'
 Execute command into container
 Goodbye !
+```
 
 ---
 **NOTE**
